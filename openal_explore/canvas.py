@@ -6,7 +6,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
-from .model import Emitter, Scene, direction
+from .model import Emitter, ReverbZone, Scene, direction
 
 
 def segment_projection(p, a, b):
@@ -39,6 +39,7 @@ class MapCanvas(QWidget):
         self.vertex = None
         self.drag = None
         self.show_ranges = True
+        self.zone_start = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setMinimumSize(400, 350)
@@ -47,13 +48,15 @@ class MapCanvas(QWidget):
         self.tool = tool
         self.draft.clear()
         self.drag = self.vertex = None
-        self.setCursor(Qt.CursorShape.CrossCursor if tool in ("point", "line") else Qt.CursorShape.ArrowCursor)
+        self.zone_start = None
+        self.setCursor(Qt.CursorShape.CrossCursor if tool in ("point", "line", "zone") else Qt.CursorShape.ArrowCursor)
         self.toolChanged.emit(tool)
         self.hintChanged.emit({
             "inspect": "Up / Down forward / backward · Left / Right or Q / E turn · Wheel zooms",
             "point": "Click to place a sound point · Esc returns to Inspect",
             "line": "Click to add vertices · Enter or double-click finishes · Backspace undoes · Esc cancels",
             "vertices": "Select a line · Drag handles · Double-click a segment to insert · Delete removes a selected vertex",
+            "zone": "Drag a rectangle to create a reverb zone · Inspect to move or resize · Esc cancels",
         }[tool])
         self.update()
 
@@ -74,6 +77,7 @@ class MapCanvas(QWidget):
     def fit(self):
         p = self.scene.player
         points = [point for e in self.scene.emitters for point in e.points]
+        points += [(z.x, z.y) for z in self.scene.zones] + [(z.x + z.width, z.y + z.height) for z in self.scene.zones]
         extent_x = max((abs(x - p.x) for x, y in points), default=15) + 5
         extent_y = max((abs(y - p.y) for x, y in points), default=15) + 5
         self.scale = max(2, min(90, self.width() / (2 * extent_x), self.height() / (2 * extent_y)))
@@ -94,6 +98,7 @@ class MapCanvas(QWidget):
     def focusOutEvent(self, event):
         self.keys.clear()
         self.drag = None
+        self.zone_start = None
         super().focusOutEvent(event)
 
     def keyPressEvent(self, event):
@@ -105,9 +110,9 @@ class MapCanvas(QWidget):
             self.set_tool("inspect")
         elif key == Qt.Key.Key_Space:
             self.pauseRequested.emit()
-        elif key in (Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4):
+        elif key in (Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4, Qt.Key.Key_5):
             self.toolRequested.emit({Qt.Key.Key_1: "inspect", Qt.Key.Key_2: "point",
-                                     Qt.Key.Key_3: "line", Qt.Key.Key_4: "vertices"}[key])
+                                     Qt.Key.Key_3: "line", Qt.Key.Key_4: "vertices", Qt.Key.Key_5: "zone"}[key])
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.tool == "line":
             self.finish_line()
         elif key == Qt.Key.Key_Backspace and self.draft:
@@ -147,6 +152,9 @@ class MapCanvas(QWidget):
                     segments.append((e.points[-1], e.points[0]))
                 if any(math.dist(point, segment_projection(point, a, b)) * self.scale < 8 for a, b in segments):
                     return e.id
+        for z in reversed(self.scene.zones):
+            if z.x <= point[0] <= z.x + z.width and z.y <= point[1] <= z.y + z.height:
+                return z.id
         return ""
 
     def mousePressEvent(self, event):
@@ -155,9 +163,13 @@ class MapCanvas(QWidget):
         if event.button() == Qt.MouseButton.RightButton:
             self.draft.clear()
             self.drag = None
+            self.zone_start = None
             self.update()
             return
         if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self.tool == "zone":
+            self.zone_start = self.cursor_world = point
             return
         if self.tool == "point":
             e = Emitter(name=f"Point {len(self.scene.emitters) + 1}", points=[list(point)])
@@ -169,6 +181,13 @@ class MapCanvas(QWidget):
             self.update()
             return
         e = self.scene.find(self.selection)
+        z = self.scene.find_zone(self.selection)
+        if z and self.tool == "inspect":
+            corners = self.zone_corners(z)
+            for index, corner in enumerate(corners):
+                if math.dist(corner, point) * self.scale < 10:
+                    self.drag = ("zone-resize", z, corners[(index + 2) % 4])
+                    return
         if self.tool == "vertices" and e and e.kind == "line":
             nearest = min(range(len(e.points)), key=lambda i: math.dist(point, e.points[i]))
             if math.dist(point, e.points[nearest]) * self.scale < 12:
@@ -181,13 +200,23 @@ class MapCanvas(QWidget):
         e = self.scene.find(hit)
         if e and self.tool == "inspect":
             self.drag = ("object", e, point, [p[:] for p in e.points])
+        z = self.scene.find_zone(hit)
+        if z and self.tool == "inspect":
+            self.drag = ("zone", z, point, (z.x, z.y))
 
     def mouseMoveEvent(self, event):
         point = self.to_world(event.position())
         self.cursor_world = point
         if self.drag:
             kind, e, *details = self.drag
-            if kind == "vertex":
+            if kind == "zone":
+                origin, original = details
+                e.x, e.y = original[0] + point[0] - origin[0], original[1] + point[1] - origin[1]
+            elif kind == "zone-resize":
+                opposite = details[0]
+                e.x, e.y = min(opposite[0], point[0]), min(opposite[1], point[1])
+                e.width, e.height = max(0.1, abs(point[0] - opposite[0])), max(0.1, abs(point[1] - opposite[1]))
+            elif kind == "vertex":
                 e.points[details[0]] = list(point)
             else:
                 origin, original = details
@@ -196,7 +225,14 @@ class MapCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
+        if self.zone_start is not None and event.button() == Qt.MouseButton.LeftButton:
+            a, b = self.zone_start, self.to_world(event.position())
+            self.zone_start = None
+            if abs(a[0] - b[0]) >= 0.5 and abs(a[1] - b[1]) >= 0.5:
+                self.added.emit(ReverbZone(name=f"Zone {len(self.scene.zones) + 1}",
+                    x=min(a[0], b[0]), y=min(a[1], b[1]), width=abs(a[0] - b[0]), height=abs(a[1] - b[1])))
         self.drag = None
+        self.update()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -231,6 +267,12 @@ class MapCanvas(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.fillRect(self.rect(), QColor("#101923"))
         self._grid(p)
+        for zone in self.scene.zones:
+            self._zone(p, zone)
+        if self.zone_start is not None:
+            p.setPen(QPen(QColor("#be9cff"), 2, Qt.PenStyle.DashLine))
+            p.setBrush(QColor(160, 120, 220, 25))
+            p.drawRect(QRectF(self.to_screen(self.zone_start), self.to_screen(self.cursor_world)).normalized())
         for e in self.scene.emitters:
             self._emitter(p, e)
         if self.draft:
@@ -279,8 +321,8 @@ class MapCanvas(QWidget):
             for dist in (e.reference_distance, e.max_distance):
                 r = min(20000, dist * self.scale)
                 p.drawEllipse(center, r, r)
-            if e.cone_outer < 360:
-                heading = math.degrees(math.atan2(velocity[0], velocity[1])) if e.kind == "line" and e.follow_path and any(velocity) else e.heading
+            if e.directional and e.cone_outer < 360:
+                heading = e.facing()
                 cone = QPainterPath(center)
                 r = min(e.max_distance * self.scale, 250)
                 for i in range(33):
@@ -313,12 +355,42 @@ class MapCanvas(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(color)
         p.drawEllipse(center, 3, 3)
+        if e.directional:
+            p.save()
+            p.translate(center)
+            p.rotate(e.facing())
+            p.setPen(QPen(color, 2))
+            p.drawLine(QPointF(0, -11), QPointF(0, -34))
+            p.drawLine(QPointF(0, -34), QPointF(-5, -26))
+            p.drawLine(QPointF(0, -34), QPointF(5, -26))
+            p.restore()
         p.setPen(color)
         p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold if selected else QFont.Weight.Normal))
         p.drawText(center + QPointF(15, -12), e.name)
         if selected:
             p.setFont(QFont("Segoe UI", 8))
             p.drawText(center + QPointF(15, 5), f"{e.altitude:g} m altitude")
+
+    @staticmethod
+    def zone_corners(z):
+        return [(z.x, z.y), (z.x + z.width, z.y),
+                (z.x + z.width, z.y + z.height), (z.x, z.y + z.height)]
+
+    def _zone(self, p, z):
+        colors = {"cave": "#b69ae5", "hall": "#71b6da", "outdoor": "#76bf87"}
+        color = QColor(colors[z.preset] if z.enabled else "#67717d")
+        selected = self.selection == z.id
+        rect = QRectF(self.to_screen((z.x, z.y)), self.to_screen((z.x + z.width, z.y + z.height))).normalized()
+        p.setPen(QPen(color, 2 if selected else 1, Qt.PenStyle.SolidLine if z.enabled else Qt.PenStyle.DashLine))
+        p.setBrush(QColor(color.red(), color.green(), color.blue(), 24))
+        p.drawRect(rect)
+        p.setFont(QFont("Segoe UI", 9))
+        p.drawText(rect.topLeft() + QPointF(8, 18), f"{z.name} · {z.preset.title()}")
+        if selected:
+            p.setBrush(color)
+            for corner in self.zone_corners(z):
+                c = self.to_screen(corner)
+                p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8))
 
     def _player(self, p):
         center = QPointF(self.width() / 2, self.height() / 2)

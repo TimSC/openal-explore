@@ -13,10 +13,11 @@ from PySide6.QtWidgets import (
 )
 
 from .audio import Audio
+from .audio_info import AudioInfoDialog
 from .canvas import MapCanvas
 from .demo import create_demo
 from .inspector import Inspector
-from .model import Scene, load_scene, save_scene
+from .model import ReverbZone, Scene, load_scene, save_scene
 
 
 STYLE = """
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
         self.last_time = time.perf_counter()
         self.telemetry_time = 0.0
         self.tree_busy = False
+        self.audio_info_dialog = None
         self.setObjectName("openalExplore")
         self.resize(1460, 920)
         self.setMinimumSize(1020, 640)
@@ -139,12 +141,14 @@ class MainWindow(QMainWindow):
         menu = self.menuBar().addMenu("&View")
         menu.addAction(self.inspector_dock.toggleViewAction())
         menu.addAction(self.tree_dock.toggleViewAction())
+        self.action(menu, "OpenAL information…", self.show_audio_info)
         self.action(menu, "Fit scene around player", self.canvas.fit, "Ctrl+0")
         ranges = self.action(menu, "Show selected sound ranges", self.toggle_ranges)
         ranges.setCheckable(True)
         ranges.setChecked(True)
         menu = self.menuBar().addMenu("&Help")
         self.action(menu, "Controls & OpenAL features", self.show_help)
+        self.action(menu, "OpenAL information…", self.show_audio_info)
         toolbar = QToolBar("Tools", self)
         toolbar.setObjectName("tools")
         toolbar.setMovable(False)
@@ -153,7 +157,7 @@ class MainWindow(QMainWindow):
         group.setExclusive(True)
         self.tool_actions = {}
         for tool, label in [("inspect", "Inspect  [1]"), ("point", "Add point  [2]"),
-                            ("line", "Draw path  [3]"), ("vertices", "Edit vertices  [4]")]:
+                            ("line", "Draw path  [3]"), ("vertices", "Edit vertices  [4]"), ("zone", "Reverb zone  [5]")]:
             action = QAction(label, self)
             action.setCheckable(True)
             action.triggered.connect(lambda checked=False, t=tool: self.set_tool(t))
@@ -168,6 +172,18 @@ class MainWindow(QMainWindow):
         self.action(toolbar, "Restart", self.restart)
         self.action(toolbar, "Fit scene", self.canvas.fit)
         self.action(toolbar, "Delete", self.delete_selected)
+        toolbar.addSeparator()
+        self.doppler_action = QAction("Doppler", self)
+        self.doppler_action.setCheckable(True)
+        self.doppler_action.setChecked(self.scene.settings.doppler_enabled)
+        self.doppler_action.setToolTip("Compare the fast engine fly-by with and without Doppler pitch shift")
+        self.doppler_action.toggled.connect(self.toggle_doppler)
+        toolbar.addAction(self.doppler_action)
+
+    def toggle_doppler(self, checked):
+        self.scene.settings.doppler_enabled = checked
+        self.inspector.refresh_fields()
+        self.mark_dirty()
 
     def set_tool(self, tool):
         self.canvas.set_tool(tool)
@@ -205,6 +221,13 @@ class MainWindow(QMainWindow):
                 self.tree.setCurrentItem(item)
         if self.canvas.selection == "player":
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
+        for z in self.scene.zones:
+            item = QTreeWidgetItem(["Zone · " + z.name, z.preset.title()])
+            item.setData(0, Qt.ItemDataRole.UserRole, z.id)
+            item.setCheckState(0, Qt.CheckState.Checked if z.enabled else Qt.CheckState.Unchecked)
+            self.tree.addTopLevelItem(item)
+            if self.canvas.selection == z.id:
+                self.tree.setCurrentItem(item)
         self.tree_busy = False
 
     def tree_selected(self, item, previous):
@@ -214,7 +237,8 @@ class MainWindow(QMainWindow):
     def tree_changed(self, item, column):
         if self.tree_busy or column != 0:
             return
-        e = self.scene.find(item.data(0, Qt.ItemDataRole.UserRole))
+        identifier = item.data(0, Qt.ItemDataRole.UserRole)
+        e = self.scene.find(identifier) or self.scene.find_zone(identifier)
         if e:
             e.enabled = item.checkState(0) == Qt.CheckState.Checked
             self.inspector.refresh_fields()
@@ -242,6 +266,9 @@ class MainWindow(QMainWindow):
         self.rebuild_tree()
         self.canvas.vertex = None
         self.canvas.update()
+        self.doppler_action.blockSignals(True)
+        self.doppler_action.setChecked(self.scene.settings.doppler_enabled)
+        self.doppler_action.blockSignals(False)
 
     def canvas_edited(self):
         self.mark_dirty()
@@ -254,6 +281,16 @@ class MainWindow(QMainWindow):
         self.inspector.refresh_table()
 
     def add_emitter(self, e):
+        if isinstance(e, ReverbZone):
+            if len(self.scene.zones) >= 256:
+                QMessageBox.information(self, "Scene limit", "A scene supports up to 256 reverb zones.")
+                return
+            self.scene.zones.append(e)
+            self.canvas.selection = e.id
+            self.rebuild_tree()
+            self.select(e.id)
+            self.mark_dirty()
+            return
         if len(self.scene.emitters) >= 512:
             QMessageBox.information(self, "Scene limit", "A scene supports up to 512 sound objects.")
             return
@@ -267,6 +304,15 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
 
     def delete_selected(self):
+        z = self.scene.find_zone(self.canvas.selection)
+        if z:
+            self.scene.zones.remove(z)
+            self.canvas.drag = self.canvas.vertex = None
+            self.canvas.selection = "player"
+            self.rebuild_tree()
+            self.select("player")
+            self.mark_dirty()
+            return
         e = self.scene.find(self.canvas.selection)
         if e:
             self.scene.emitters.remove(e)
@@ -301,7 +347,7 @@ class MainWindow(QMainWindow):
                 self.mark_dirty()
         if not self.paused:
             self.scene.advance(dt)
-        self.audio.update(self.scene, (vx, vy), self.paused)
+        self.audio.update(self.scene, (vx, vy), self.paused, dt=dt)
         self.canvas.update()
         if now - self.telemetry_time > 0.2:
             self.telemetry_time = now
@@ -311,6 +357,8 @@ class MainWindow(QMainWindow):
             playing = 0
             for i in range(1, self.tree.topLevelItemCount()):
                 item = self.tree.topLevelItem(i)
+                if self.scene.find_zone(item.data(0, Qt.ItemDataRole.UserRole)):
+                    continue
                 state = self.audio.state(item.data(0, Qt.ItemDataRole.UserRole))
                 item.setText(1, state)
                 item.setToolTip(1, state)
@@ -338,12 +386,16 @@ class MainWindow(QMainWindow):
         self.dirty = False
         self.canvas.scene = self.inspector.scene = scene
         self.canvas.draft.clear()
+        self.canvas.zone_start = None
         self.canvas.drag = self.canvas.vertex = None
         self.canvas.keys.clear()
         self.canvas.selection = "player"
         self.rebuild_tree()
         self.select("player")
         self.canvas.fit()
+        self.doppler_action.blockSignals(True)
+        self.doppler_action.setChecked(scene.settings.doppler_enabled)
+        self.doppler_action.blockSignals(False)
         self.update_title()
 
     def load_demo(self):
@@ -387,21 +439,35 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "OpenAL Explore", "Click the map to give it keyboard focus.\n\n"
             "Up / Down: forward / backward · Left / Right or Q / E: turn · Mouse wheel: zoom\n"
             "The map stays north-up while the player turns.\n"
-            "1: Inspect · 2: Add point · 3: Draw path · 4: Edit vertices\n"
+            "1: Inspect · 2: Add point · 3: Draw path · 4: Edit vertices · 5: Reverb zone\n"
             "Space: pause/resume · Delete: delete selected sound/vertex\n"
             "Path drawing: click vertices, Enter/double-click finishes, Esc cancels.\n"
             "Vertex editing: drag handles, double-click segments to insert.\n"
             "Inspect: drag a sound or an entire path to move it.\n\n"
+            "Reverb zones: drag to draw, Inspect to move, drag selected corners to resize.\n"
+            "Doppler toolbar toggle: compare the fast engine fly-by with/without pitch shift.\n"
             "Select the player for listener settings, HRTF, Doppler, attenuation model and reverb.\n"
             "Select sounds for files, looping, volume, pitch, altitude, range, cones and EFX.\n"
+            "Enable Directional speaker for a visible facing arrow and cone attenuation.\n"
+            "Sound buffering Auto streams files longer than 10 s; live status shows buffer time/underruns.\n"
+            "Effects tab: echo, chorus, flanger, distortion or equalizer, plus room reverb.\n"
             "HRTF works best with headphones. Optional features depend on the output device.\n"
             "The Properties and Scene objects panels can float, move and dock. Reopen them under View.")
+
+    def show_audio_info(self):
+        if self.audio_info_dialog is None:
+            self.audio_info_dialog = AudioInfoDialog(self.audio, lambda: self.scene, self)
+        self.audio_info_dialog.show()
+        self.audio_info_dialog.raise_()
+        self.audio_info_dialog.activateWindow()
 
     def closeEvent(self, event):
         if not self.can_discard():
             event.ignore()
             return
         self.timer.stop()
+        if self.audio_info_dialog is not None:
+            self.audio_info_dialog.close()
         self.audio.close()
         event.accept()
 

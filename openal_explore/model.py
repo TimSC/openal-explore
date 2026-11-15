@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import uuid
 
+from .effect_specs import EFFECTS, ZONE_PRESETS
+
 
 def direction(heading: float) -> tuple[float, float]:
     a = math.radians(heading)
@@ -65,6 +67,41 @@ class Settings:
     reverb: bool = False
     reverb_gain: float = 0.25
     reverb_decay: float = 1.5
+    doppler_enabled: bool = True
+    zones_enabled: bool = True
+    transition_time: float = 1.0
+
+
+@dataclass
+class ReverbZone:
+    name: str = "Reverb zone"
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 20.0
+    height: float = 20.0
+    enabled: bool = True
+    preset: str = "hall"
+    wet: float = 0.35
+    decay: float = 2.4
+    gain_hf: float = 0.8
+    diffusion: float = 0.9
+    fade: float = 5.0
+
+    def apply_preset(self, preset):
+        self.preset = preset
+        for key, value in ZONE_PRESETS[preset].items():
+            setattr(self, key, value)
+
+    def weight(self, x, y):
+        if not self.enabled:
+            return 0.0
+        distance = math.hypot(max(self.x - x, 0, x - self.x - self.width),
+                              max(self.y - y, 0, y - self.y - self.height))
+        if distance == 0:
+            return 1.0
+        t = max(0.0, 1 - distance / self.fade) if self.fade > 0 else 0.0
+        return t * t * (3 - 2 * t)
 
 
 @dataclass
@@ -87,13 +124,18 @@ class Emitter:
     motion: str = "pingpong"
     heading: float = 0.0
     follow_path: bool = True
-    cone_inner: float = 360.0
-    cone_outer: float = 360.0
+    cone_inner: float = 60.0
+    cone_outer: float = 120.0
     cone_gain: float = 0.0
     air_absorption: float = 0.0
     lowpass: bool = False
     lowpass_hf: float = 0.3
     reverb_send: bool = True
+    directional: bool = False
+    playback_mode: str = "auto"
+    effect_type: str = "NONE"
+    effect_gain: float = 0.35
+    effect_params: dict[str, float] = field(default_factory=dict)
     phase: float = field(default=0.0, repr=False, metadata={"runtime": True})
 
     def sample(self):
@@ -105,12 +147,20 @@ class Emitter:
     def reset(self):
         self.phase = 0.0
 
+    def facing(self):
+        if self.kind == "line" and self.follow_path:
+            _, tangent = path_sample(self.points, self.phase, self.motion)
+            if any(tangent):
+                return math.degrees(math.atan2(tangent[0], tangent[1]))
+        return self.heading
+
 
 @dataclass
 class Scene:
     player: Player = field(default_factory=Player)
     settings: Settings = field(default_factory=Settings)
     emitters: list[Emitter] = field(default_factory=list)
+    zones: list[ReverbZone] = field(default_factory=list)
 
     def advance(self, dt: float):
         for e in self.emitters:
@@ -119,6 +169,22 @@ class Scene:
 
     def find(self, identifier):
         return next((e for e in self.emitters if e.id == identifier), None)
+
+    def find_zone(self, identifier):
+        return next((z for z in self.zones if z.id == identifier), None)
+
+    def reverb_target(self):
+        s = self.settings
+        result = {"wet": s.reverb_gain if s.reverb else 0.0, "decay": s.reverb_decay,
+                  "gain_hf": 0.83, "diffusion": 1.0}
+        name = "Global reverb" if s.reverb else "Outside zones"
+        if s.zones_enabled:
+            for zone in self.zones:  # Last drawn zone has priority where zones overlap.
+                weight = zone.weight(self.player.x, self.player.y)
+                if weight:
+                    result = {k: value + (getattr(zone, k) - value) * weight for k, value in result.items()}
+                    name = zone.name
+        return result, name
 
 
 def _construct(cls, data):
@@ -134,7 +200,7 @@ def _number(value, lo, hi, label):
 
 
 def validate(scene: Scene):
-    for obj in [scene.player, scene.settings, *scene.emitters]:
+    for obj in [scene.player, scene.settings, *scene.emitters, *scene.zones]:
         defaults = type(obj)()
         for f in fields(obj):
             if f.metadata.get("runtime"):
@@ -153,6 +219,7 @@ def validate(scene: Scene):
     _number(s.speed_of_sound, 10, 10000, "Speed of sound")
     _number(s.reverb_gain, 0, 1, "Reverb gain")
     _number(s.reverb_decay, 0.1, 20, "Reverb decay")
+    _number(s.transition_time, 0.05, 10, "Zone transition time")
     if s.distance_model not in {"NONE", "INVERSE", "INVERSE_CLAMPED", "LINEAR", "LINEAR_CLAMPED", "EXPONENT", "EXPONENT_CLAMPED"}:
         raise ValueError("Unknown distance model")
     ids = set()
@@ -160,6 +227,17 @@ def validate(scene: Scene):
         if not e.id or e.id in ids or e.id == "player":
             raise ValueError("Sound IDs must be unique")
         ids.add(e.id)
+        if e.playback_mode not in ("auto", "static", "stream") or e.effect_type not in {"NONE", *EFFECTS}:
+            raise ValueError("Unknown playback mode or effect")
+        _number(e.effect_gain, 0, 1, "Effect return volume")
+        if not isinstance(e.effect_params, dict):
+            raise ValueError("Effect parameters must be an object")
+        for key, value in e.effect_params.items():
+            schema = EFFECTS.get(e.effect_type, {})
+            if key not in schema:
+                raise ValueError(f"Unknown effect parameter: {key}")
+            _, lo, hi, _, _ = schema[key]
+            _number(value, lo, hi, key)
         if e.kind not in ("point", "line") or e.motion not in ("pingpong", "loop"):
             raise ValueError("Unknown sound or path type")
         if not isinstance(e.points, list) or not (1 <= len(e.points) <= 10000):
@@ -179,6 +257,15 @@ def validate(scene: Scene):
             _number(getattr(e, key), lo, hi, key)
         if e.max_distance <= e.reference_distance or e.cone_inner > e.cone_outer:
             raise ValueError("Max distance must exceed reference distance; outer cone must contain inner cone")
+    for z in scene.zones:
+        if not z.id or z.id in ids or z.id == "player":
+            raise ValueError("Zone and sound IDs must be unique")
+        ids.add(z.id)
+        if z.preset not in ZONE_PRESETS:
+            raise ValueError("Unknown zone preset")
+        for key, lo, hi in [("width", 0.1, 10000), ("height", 0.1, 10000), ("wet", 0, 1),
+                            ("decay", 0.1, 20), ("gain_hf", 0, 1), ("diffusion", 0, 1), ("fade", 0, 100)]:
+            _number(getattr(z, key), lo, hi, key)
 
 
 def save_scene(scene: Scene, path: Path):
@@ -193,7 +280,8 @@ def save_scene(scene: Scene, path: Path):
             except ValueError:  # A sound on a different Windows drive stays absolute.
                 pass
         emitters.append(data)
-    data = {"version": 1, "player": asdict(scene.player), "settings": asdict(scene.settings), "emitters": emitters}
+    data = {"version": 1, "player": asdict(scene.player), "settings": asdict(scene.settings),
+            "emitters": emitters, "zones": [asdict(z) for z in scene.zones]}
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(data, indent=2, allow_nan=False), encoding="utf-8")
     temporary.replace(path)
@@ -209,6 +297,13 @@ def load_scene(path: Path) -> Scene:
         raise ValueError("Scenes support at most 512 sounds")
     scene = Scene(_construct(Player, data.get("player", {})), _construct(Settings, data.get("settings", {})),
                   [_construct(Emitter, e) for e in raw])
+    zones = data.get("zones", [])
+    if not isinstance(zones, list) or len(zones) > 256:
+        raise ValueError("Scenes support at most 256 reverb zones")
+    scene.zones = [_construct(ReverbZone, z) for z in zones]
+    for emitter, original in zip(scene.emitters, raw):
+        if "directional" not in original:
+            emitter.directional = original.get("cone_inner", 360) < 360 or original.get("cone_outer", 360) < 360
     validate(scene)
     for e in scene.emitters:
         if e.file:

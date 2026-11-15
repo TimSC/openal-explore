@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .effect_specs import EFFECTS, ZONE_PRESETS
+
 
 class Inspector(QWidget):
     changed = Signal()
@@ -65,14 +67,14 @@ class Inspector(QWidget):
         label.setObjectName("muted")
         layout.addWidget(label)
 
-    def number(self, form, label, obj, key, low, high, step=0.1, suffix="", tip=""):
+    def number(self, form, label, obj, key, low, high, step=0.1, suffix="", tip="", default=None):
         widget = QDoubleSpinBox()
         widget.setRange(low, high)
-        widget.setDecimals(2)
+        widget.setDecimals(max(2, min(4, math.ceil(-math.log10(step)))))
         widget.setSingleStep(step)
         widget.setSuffix(suffix)
         widget.setKeyboardTracking(False)
-        widget.setValue(getattr(obj, key))
+        widget.setValue(obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key))
         widget.setToolTip(tip)
         widget.valueChanged.connect(lambda value: self.assign(obj, key, value))
         form.addRow(label, widget)
@@ -98,7 +100,16 @@ class Inspector(QWidget):
         return widget
 
     def assign(self, obj, key, value):
-        setattr(obj, key, value)
+        if isinstance(obj, dict):
+            obj[key] = value
+        else:
+            setattr(obj, key, value)
+        if key == "effect_type":
+            obj.effect_params = {k: spec[3] for k, spec in EFFECTS.get(value, {}).items()}
+        elif key == "preset":
+            obj.apply_preset(value)
+        elif key == "directional" and value and obj.cone_inner == obj.cone_outer == 360:
+            obj.cone_inner, obj.cone_outer = 60.0, 120.0
         if hasattr(obj, "max_distance"):
             if key == "reference_distance" and obj.max_distance <= value:
                 obj.max_distance = value + 0.01
@@ -110,6 +121,8 @@ class Inspector(QWidget):
                 obj.cone_inner = value
         self.refresh_fields()
         self.changed.emit()
+        if key in ("effect_type", "preset"):
+            self.select(self.identifier)
 
     def select(self, identifier):
         old_index = self.tabs.currentIndex() if identifier == self.identifier else 0
@@ -124,9 +137,11 @@ class Inspector(QWidget):
             self.player_ui()
         elif (emitter := self.scene.find(identifier)):
             self.emitter_ui(emitter)
+        elif (zone := self.scene.find_zone(identifier)):
+            self.zone_ui(zone)
         else:
             self.title.setText("Inspector")
-            self.subtitle.setText("Select the player, a sound point, or a path on the map.")
+            self.subtitle.setText("Select the player, a sound, or a reverb zone on the map.")
         if 0 <= old_index < self.tabs.count():
             self.tabs.setCurrentIndex(old_index)
 
@@ -159,6 +174,7 @@ class Inspector(QWidget):
             ("EXPONENT_CLAMPED", "Exponent · clamped"), ("EXPONENT", "Exponent")])
         self.number(form, "Doppler factor", settings, "doppler", 0, 10, 0.1,
                     tip="0 disables velocity-driven pitch changes. Higher values exaggerate the effect.")
+        self.check(form, "Enable Doppler shift", settings, "doppler_enabled", "Compare the fast fly-by with and without velocity-driven pitch changes.")
         self.number(form, "Speed of sound", settings, "speed_of_sound", 10, 10000, 10, " m/s")
         form = self.group(page, "Reverb · EFX")
         enabled = self.check(form, "Enable room reverb", settings, "reverb")
@@ -166,6 +182,13 @@ class Inspector(QWidget):
         decay = self.number(form, "Decay time", settings, "reverb_decay", 0.1, 20, 0.1, " s")
         for widget in (enabled, gain, decay):
             widget.setEnabled(self.audio.efx)
+        form = self.group(page, "Reverb zones")
+        self.check(form, "Enable reverb zones", settings, "zones_enabled")
+        self.number(form, "Transition time", settings, "transition_time", 0.05, 10, 0.1, " s")
+        self.zone_status = QLabel()
+        self.zone_status.setWordWrap(True)
+        form.addRow("Current environment", self.zone_status)
+        self.note(page, "Draw zones with tool 5. Outside zones, the global reverb above applies. The last zone in the scene wins in overlaps.")
         self.note(page, "EFX available: reverb, low-pass filtering and air absorption." if self.audio.efx else
                   "EFX is unavailable on this audio device. Effects controls are disabled.")
         self.note(page, "Positions are measured in metres. Altitude is OpenAL's vertical axis. Scene velocity is sent to OpenAL for Doppler mixing.")
@@ -210,6 +233,11 @@ class Inspector(QWidget):
         self.playback = QLabel()
         self.playback.setWordWrap(True)
         form.addRow("Playback", self.playback)
+        self.combo(form, "Buffering", e, "playback_mode", [("auto", "Auto · stream files over 10 s"),
+            ("stream", "Stream · queued buffers"), ("static", "Static · load entire file")])
+        self.stream_status = QLabel()
+        self.stream_status.setWordWrap(True)
+        form.addRow("Stream status", self.stream_status)
         if e.kind == "point":
             form = self.group(page, "Position")
             for index, label in enumerate(("X · east", "Y · north")):
@@ -248,6 +276,7 @@ class Inspector(QWidget):
         self.number(form, "Rolloff factor", e, "rolloff", 0, 10, 0.1,
                     tip="0 removes distance attenuation; 1 is the normal curve.")
         form = self.group(page, "Directional sound cone")
+        self.check(form, "Directional speaker", e, "directional", "Enable cone attenuation and show a facing arrow on the map.")
         self.number(form, "Facing", e, "heading", -360, 360, 5, "°",
                     "0° north, 90° east. Moving lines can face their current path segment instead.")
         self.number(form, "Inner cone", e, "cone_inner", 0, 360, 5, "°", "Full volume inside this angle. 360° is omnidirectional.")
@@ -268,6 +297,20 @@ class Inspector(QWidget):
             control.setEnabled(self.audio.efx)
         self.note(page, "Enable and tune the shared reverb under Player → Acoustics. Each sound can opt into it." if self.audio.efx else
                   "This device does not support EFX. These controls are unavailable.")
+        form = self.group(page, "Effects playground")
+        choice = self.combo(form, "Effect", e, "effect_type", [("NONE", "None")] +
+            [(name, name.title()) for name in EFFECTS])
+        choice.setEnabled(self.audio.efx)
+        mix = self.number(form, "Effect return volume", e, "effect_gain", 0, 1, 0.05,
+                          tip="Adds the processed sound to the original dry signal. 0 bypasses the effect return.")
+        mix.setEnabled(self.audio.efx)
+        for name, (label, low, high, default, step) in EFFECTS.get(e.effect_type, {}).items():
+            widget = self.number(form, label, e.effect_params, name, low, high, step, default=default)
+            widget.setEnabled(self.audio.efx)
+        self.effect_status = QLabel()
+        self.effect_status.setWordWrap(True)
+        form.addRow(self.effect_status)
+        self.note(page, "Room reverb and this source effect run together when the device provides two sends. With one send, the source effect replaces room reverb for this sound.")
         page.addStretch()
         if e.kind == "line":
             page = self.page("Vertices")
@@ -289,6 +332,31 @@ class Inspector(QWidget):
             page.addLayout(row)
             page.addStretch()
         self.refresh_telemetry()
+
+    def zone_ui(self, z):
+        self.title.setText(z.name)
+        self.subtitle.setText("Reverb area · drag the rectangle to move it, or drag a corner to resize it.")
+        page = self.page("Zone")
+        form = self.group(page, "Area")
+        name = QLineEdit(z.name)
+        name.editingFinished.connect(lambda: self.assign(z, "name", name.text().strip() or "Reverb zone"))
+        form.addRow("Name", name)
+        self.check(form, "Enabled", z, "enabled")
+        for key, label in [("x", "X · west edge"), ("y", "Y · south edge")]:
+            self.number(form, label, z, key, -1e6, 1e6, 1, " m")
+        for key in ("width", "height"):
+            self.number(form, key.title(), z, key, 0.1, 10000, 1, " m")
+        form = self.group(page, "Environment")
+        self.combo(form, "Preset", z, "preset", [(k, k.title()) for k in ZONE_PRESETS])
+        self.number(form, "Reverb volume", z, "wet", 0, 1, 0.05)
+        self.number(form, "Decay time", z, "decay", 0.1, 20, 0.1, " s")
+        self.number(form, "High-frequency gain", z, "gain_hf", 0, 1, 0.05)
+        self.number(form, "Diffusion", z, "diffusion", 0, 1, 0.05)
+        self.number(form, "Edge blend distance", z, "fade", 0, 100, 0.5, " m")
+        self.note(page, "The area extends through all altitudes. Its reverb blends outside the border over the edge distance; transitions are smoothed using Player → Acoustics → Transition time.")
+        if not self.audio.efx:
+            self.note(page, "Reverb requires EFX support on the output device.")
+        page.addStretch()
 
     def set_point(self, e, index, value):
         e.points[0][index] = value
@@ -335,7 +403,7 @@ class Inspector(QWidget):
         for widget, obj, key in self.bindings:
             if focus and (widget == focus or widget.isAncestorOf(focus)):
                 continue
-            value = obj[key] if isinstance(obj, list) else getattr(obj, key)
+            value = obj.get(key, widget.value()) if isinstance(obj, dict) else obj[key] if isinstance(obj, list) else getattr(obj, key)
             widget.blockSignals(True)
             if isinstance(widget, QCheckBox):
                 widget.setChecked(value)
@@ -347,11 +415,20 @@ class Inspector(QWidget):
         if self.identifier == "player":
             self.hrtf_status.setText(self.audio.hrtf_actual)
             self.hrtf_control.setEnabled(self.audio.hrtf)
+            self.zone_status.setText(self.audio.zone_name)
+            return
+        z = self.scene.find_zone(self.identifier)
+        if z:
+            self.title.setText(z.name)
             return
         e = self.scene.find(self.identifier)
         if e:
             pos, velocity = e.sample()
             self.title.setText(e.name)
             self.playback.setText(self.audio.state(e.id))
+            self.stream_status.setText(self.audio.stream_info(e.id))
+            playback = self.audio.playbacks.get(e.id)
+            self.effect_status.setText(playback.effect_message if playback and playback.effect_message else
+                f"{self.audio.effect_sends} effect sends available" if self.audio.efx else "EFX unavailable")
             self.position_label.setText(f"{pos[0]:.2f} / {pos[1]:.2f} m")
             self.velocity_label.setText(f"{velocity[0]:.1f} / {velocity[1]:.1f} m/s")

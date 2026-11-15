@@ -17,10 +17,17 @@ cd C:\Dev\openal-explore
 Alternatively, `./run.ps1` forwards arguments to the same command. On first run,
 the demo generates three short mono WAV files in `samples/`: a pulsing beacon,
 a chime, and an engine sound. It also places the available `samples/ogg/` files
-around an outer ring: the ten included samples are 65 metres from the starting
-player position and approximately 40 metres apart. Each has a 26-metre audible
-radius, so walk towards a source to hear it without the whole collection playing
-at once. **File → Load demo scene** restores this scene.
+around an outer ring of radius 65 metres, with locations approximately 40 metres
+apart. Three travel back and forth along short 24-metre paths at 3–5 m/s; the
+others stay stationary. Initial source volumes vary from 0.56 to 0.75.
+Default source altitudes range from 0 to 15 metres, including low sources below
+the listener and elevated sources overhead. Altitude remains editable for each source.
+Each Ogg source has a 26-metre audible radius, so walk towards a source to hear
+it without the whole collection playing at once. The central **Doppler fly-by**
+travels at 45 m/s along a 70-metre path near the player. Three directional
+speakers have narrow cones and visible arrows. The **Stone cave**, **Concert
+hall**, and **Open air** rectangles demonstrate reverb environments.
+**File → Load demo scene** restores this scene.
 
 ```powershell
 # Open a saved scene
@@ -56,8 +63,9 @@ when editing a property or switching applications.
 | 2 | Add a sound point with one click |
 | 3 | Draw a path: click vertices, Enter/double-click to finish |
 | 4 | Edit vertices: select a path, then drag square handles |
+| 5 | Draw a rectangular reverb zone by dragging |
 | Double-click a segment in Edit Vertices | Insert a control point |
-| Delete / Backspace on map | Remove selected vertex, or selected source |
+| Delete / Backspace on map | Remove selected vertex, source, or reverb zone |
 | Backspace while drawing | Undo the last draft vertex |
 | Escape | Cancel drawing and return to Inspect |
 | Right-click | Cancel the current draft |
@@ -65,10 +73,13 @@ when editing a property or switching applications.
 | Ctrl+0 | Fit the scene around the current player position |
 | Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | New / open / save / save as |
 
-The toolbar buttons also work without keyboard shortcuts. Shortcuts 1–4 and
+The toolbar buttons also work without keyboard shortcuts. Shortcuts 1–5 and
 Space apply only to the map, so they do not interfere with entering properties.
 **Restart** resets all path positions and replays sounds. **Replay / retry sound**
 restarts just the selected sound without resetting its path.
+The **Doppler** toolbar checkbox switches Doppler on/off while preserving the
+configured factor. Compare the fast fly-by with the checkbox enabled/disabled;
+use Restart to replay the same pass.
 
 Select objects on the map or in **Scene objects**. The properties and object
 panels can be moved, detached, closed, and reopened through **View**.
@@ -76,14 +87,24 @@ The **Vertices** inspector tab provides numeric editing and add/remove buttons.
 Paths retain at least two control points. Closed-loop paths include a segment
 from the last point back to the first; back-and-forth paths reverse at their ends.
 
+**View → OpenAL information** (also under Help) opens a separate, read-only
+window. Tabs show the wrapper/native library, vendor, renderer and version,
+output device and attributes, HRTF/EFX capabilities, live listener/source state,
+buffering statistics, and AL/ALC extension lists. It updates once per second
+while open; Refresh updates immediately and Copy all copies a diagnostic report.
+The window does not change scene or playback settings and also explains when
+audio is disabled or unavailable.
+
 ## Sound properties
 
 - File, enabled, looping (on by default), volume and pitch.
 - Point coordinates, altitude, and live position/velocity/playback status.
 - Line speed in metres per second, back-and-forth/closed-loop travel, and path-facing direction.
 - Audible radius, reference distance, maximum distance and rolloff.
-- Direction, inner/outer cone angles and outside-cone volume.
+- Directional speaker checkbox, facing direction, inner/outer cone angles and outside-cone volume.
 - EFX low-pass filtering, high-frequency gain, air absorption, and a reverb send.
+- Auto/static/stream buffering, live buffered time and underrun count.
+- Echo, chorus, flanger, distortion or equalizer, with live effect parameters and return volume.
 
 **Player / listener** properties include coordinates, altitude, movement speed,
 facing direction, master volume, HRTF, all seven OpenAL
@@ -96,6 +117,34 @@ Coordinates are metres: X east, Y north, altitude up. OpenAL receives
 is east. Line velocities follow the current segment; listener velocity follows
 keyboard motion. Property edits and dragging teleport objects without an
 artificial Doppler impulse. Corners and path-end reversals are instantaneous.
+Directional speaker arrows appear even when the source is not selected. The
+direction follows the editable heading, or the current path segment when
+**Face along path** is enabled. Disabling Directional speaker bypasses the cone
+without losing its configured angles.
+
+## Reverb zones and effects
+
+Use **Reverb zone [5]** to drag a rectangular area. In Inspect mode, drag the
+area to move it or drag a selected corner to resize it. Select a zone to edit
+its bounds, name, enabled state, preset, volume, decay, high-frequency gain,
+diffusion and edge blend distance. Cave, hall and outdoor presets provide
+starting values. Zones extend through all altitudes.
+
+Inside a zone its settings apply fully. Outside its border, its influence fades
+over the edge blend distance. Overlapping zones blend in scene order, with the
+last zone taking precedence. The audio controller also smooths changes over
+**Player → Acoustics → Transition time**, avoiding abrupt changes as you move
+or edit a zone. Outside all zones, the player's global reverb settings apply.
+Disable **Enable reverb zones** to compare against the global environment.
+The listener inspector reports the current environment.
+
+**Sound → Effects → Effects playground** selects one additional effect for
+that source. Return volume mixes the processed signal with the dry sound;
+zero bypasses the return. Parameters update during playback. Room/zone reverb
+and the additional source effect use separate auxiliary sends when the device
+supports two sends. With one send, the source effect replaces reverb for that
+source. Unsupported effects report their unavailability while dry playback
+continues. Effects and reverb require EFX support.
 
 **Audible radius** is a demo-level hard stop, using the full 3D source/listener
 distance. **Max distance** is an OpenAL attenuation parameter; it does not
@@ -114,10 +163,21 @@ independent. Disabling a source stops its audio and freezes its path motion.
 [SoundFile](https://pypi.org/project/soundfile/) handles decoding through
 libsndfile. WAV, FLAC, OGG and other installed decoder formats can be selected.
 Decoded channels are averaged to mono and converted to PCM16 for OpenAL
-positional playback; the original files are unchanged. Decoding and resource
-creation currently happen on the UI thread, and sounds are loaded in full and
-cached until scene replacement, so short demo assets work best. This demo does
-not yet stream long recordings.
+positional playback; the original files are unchanged. **Buffering → Auto**
+streams recordings longer than 10 seconds, including the ten supplied Ogg
+samples. **Stream** forces streaming for any length; **Static** loads the whole
+file and caches its OpenAL buffer until scene replacement.
+
+Streaming decodes small chunks with SoundFile, queues up to four 8192-frame mono
+buffers in OpenAL, then reclaims/refills processed chunks on the Qt timer. The
+sound inspector shows queued audio time and underruns. A drained queue with
+more audio available is restarted and counted as an underrun; natural one-shot
+completion is not. Looping is handled by seeking the decoder, so it also works
+for short streamed files. Disabling, leaving range, replaying or changing scenes
+closes decoder handles and releases queued buffers. Changing buffering mode
+restarts that sound. Underruns count over the source's playback session and reset
+on Replay or file/mode changes. Decoding and OpenAL calls stay on the Qt thread,
+so a long UI stall can still cause an underrun; no hidden audio thread is used.
 
 To convert a folder of WAV assets to Ogg Vorbis using SoundFile:
 
@@ -145,7 +205,10 @@ Fix the path or press Replay / retry sound after fixing the file.
 Tests cover arc-length movement, reversal and closed paths, JSON round trips and
 invalid scenes, Qt drawing/vertex tools and keyboard focus, plus **real OpenAL
 loopback rendering** for stereo panning, source/listener position and velocity,
-effects, pause/resume, one-shots and range transitions. Loopback tests do not
+all five playground effects, rendered cone attenuation and Doppler pitch,
+reverb transitions, bounded streaming/looping, deliberate underrun recovery,
+pause/resume, one-shots and range transitions. Qt tests also exercise zone drawing,
+moving, resizing and presets. Loopback tests do not
 play through the speakers. Perceptual headphone/HRTF listening remains a manual
 check.
 

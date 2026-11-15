@@ -38,6 +38,7 @@ def test_moving_source_velocity_and_effects(audio, demo):
     demo.emitters = [e]
     e.points = [[0, 0], [20, 0]]
     e.speed = 10
+    e.altitude = 2.5
     e.lowpass = True
     e.air_absorption = 2
     demo.settings.reverb = True
@@ -47,7 +48,7 @@ def test_moving_source_velocity_and_effects(audio, demo):
     assert audio.state(e.id) == "Playing"
     with audio.context.activate():
         src = audio.playbacks[e.id].source
-        assert src.position == pytest.approx((5, 0, 0))
+        assert src.position == pytest.approx((5, 2.5, 0))
         assert src.velocity == pytest.approx((10, 0, 0))
         assert audio.context.listener.velocity == pytest.approx((1, 0, -2))
         if audio.efx:
