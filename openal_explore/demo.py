@@ -1,4 +1,4 @@
-"""Small generated mono WAVs make the demo usable without external assets."""
+"""Generated sounds near the player, with an outer ring of available Ogg samples."""
 from pathlib import Path
 import math
 import random
@@ -36,9 +36,25 @@ def create_demo(folder: Path) -> Scene:
             wav.setsampwidth(2)
             wav.setframerate(rate)
             wav.writeframes(struct.pack(f"<{len(samples)}h", *samples))
-    return Scene(emitters=[
+    scene = Scene(emitters=[
         Emitter(name="Beacon", points=[[-10, 7]], file=str((folder / "beacon.wav").resolve())),
         Emitter(name="High chime", points=[[12, 10]], altitude=8, file=str((folder / "chime.wav").resolve())),
         Emitter(name="Passing engine", kind="line", points=[[-22, -8], [-8, -5], [8, 2], [23, -6]],
                 speed=9, gain=0.8, file=str((folder / "engine.wav").resolve())),
     ])
+    ogg_files = sorted(
+        (p for p in (folder / "ogg").glob("*") if p.is_file() and p.suffix.lower() == ".ogg"),
+        key=lambda p: p.name.casefold(),
+    )
+    # Ten samples sit about 40 m apart, beyond the small central demo.
+    # Grow the ring if more samples are added to keep that separation useful.
+    ring_radius = max(65.0, len(ogg_files) * 6.5)
+    for index, path in enumerate(ogg_files):
+        angle = 2 * math.pi * index / len(ogg_files)
+        scene.emitters.append(Emitter(
+            name=path.stem.rsplit("__", 1)[-1],
+            points=[[round(ring_radius * math.sin(angle), 2), round(ring_radius * math.cos(angle), 2)]],
+            file=str(path.resolve()), gain=0.65,
+            radius=26.0, reference_distance=4.0, max_distance=26.0,
+        ))
+    return scene

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 from pathlib import Path
 import sys
 import time
@@ -298,8 +297,6 @@ class MainWindow(QMainWindow):
             if vx or vy or turn:
                 player.x = max(-1e6, min(1e6, player.x + vx * dt))
                 player.y = max(-1e6, min(1e6, player.y + vy * dt))
-                if player.face_movement and (x or y):
-                    player.heading = math.degrees(math.atan2(x, y))
                 player.heading = (player.heading + turn * 90 * dt + 180) % 360 - 180
                 self.mark_dirty()
         if not self.paused:
@@ -388,7 +385,8 @@ class MainWindow(QMainWindow):
 
     def show_help(self):
         QMessageBox.information(self, "OpenAL Explore", "Click the map to give it keyboard focus.\n\n"
-            "WASD / arrows: move · Q / E: turn · Mouse wheel: zoom\n"
+            "Up / Down: forward / backward · Left / Right or Q / E: turn · Mouse wheel: zoom\n"
+            "The map stays north-up while the player turns.\n"
             "1: Inspect · 2: Add point · 3: Draw path · 4: Edit vertices\n"
             "Space: pause/resume · Delete: delete selected sound/vertex\n"
             "Path drawing: click vertices, Enter/double-click finishes, Esc cancels.\n"

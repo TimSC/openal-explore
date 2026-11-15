@@ -25,8 +25,7 @@ class MapCanvas(QWidget):
     toolRequested = Signal(str)
     toolChanged = Signal(str)
     hintChanged = Signal(str)
-    movement_keys = {Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D,
-                     Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Down, Qt.Key.Key_Right}
+    movement_keys = {Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Down, Qt.Key.Key_Right}
 
     def __init__(self, scene: Scene):
         super().__init__()
@@ -51,7 +50,7 @@ class MapCanvas(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor if tool in ("point", "line") else Qt.CursorShape.ArrowCursor)
         self.toolChanged.emit(tool)
         self.hintChanged.emit({
-            "inspect": "Select & drag sounds · WASD / arrows move · Q / E turn · Wheel zooms",
+            "inspect": "Up / Down forward / backward · Left / Right or Q / E turn · Wheel zooms",
             "point": "Click to place a sound point · Esc returns to Inspect",
             "line": "Click to add vertices · Enter or double-click finishes · Backspace undoes · Esc cancels",
             "vertices": "Select a line · Drag handles · Double-click a segment to insert · Delete removes a selected vertex",
@@ -82,11 +81,10 @@ class MapCanvas(QWidget):
 
     def movement(self):
         k = self.keys
-        x = int(bool(k & {Qt.Key.Key_D, Qt.Key.Key_Right})) - int(bool(k & {Qt.Key.Key_A, Qt.Key.Key_Left}))
-        y = int(bool(k & {Qt.Key.Key_W, Qt.Key.Key_Up})) - int(bool(k & {Qt.Key.Key_S, Qt.Key.Key_Down}))
-        size = math.hypot(x, y) or 1
-        turn = int(Qt.Key.Key_E in k) - int(Qt.Key.Key_Q in k)
-        return x / size, y / size, turn
+        forward = int(Qt.Key.Key_Up in k) - int(Qt.Key.Key_Down in k)
+        dx, dy = direction(self.scene.player.heading)
+        turn = int(bool(k & {Qt.Key.Key_E, Qt.Key.Key_Right})) - int(bool(k & {Qt.Key.Key_Q, Qt.Key.Key_Left}))
+        return dx * forward, dy * forward, turn
 
     def wheelEvent(self, event):
         self.scale = max(2, min(100, self.scale * 1.15 ** (event.angleDelta().y() / 120)))

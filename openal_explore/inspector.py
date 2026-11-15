@@ -139,8 +139,7 @@ class Inspector(QWidget):
         for key, label in [("x", "X · east"), ("y", "Y · north"), ("altitude", "Altitude")]:
             self.number(form, label, player, key, -1e6, 1e6, 1, " m")
         self.number(form, "Move speed", player, "speed", 0, 100, 1, " m/s")
-        self.number(form, "Facing", player, "heading", -360, 360, 5, "°", "0° is north. Q / E turn while the map has focus.")
-        self.check(form, "Face movement direction", player, "face_movement")
+        self.number(form, "Facing", player, "heading", -360, 360, 5, "°", "0° is north. Left / Right or Q / E turn while the map has focus. The map stays north-up.")
         form = self.group(page, "Output")
         self.number(form, "Master volume", settings, "volume", 0, 1, 0.05)
         hrtf = self.check(form, "Headphone spatialization (HRTF)", settings, "hrtf",

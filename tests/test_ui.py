@@ -1,8 +1,63 @@
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
+import pytest
 
 from openal_explore.app import MainWindow
 from openal_explore.audio import Audio
+
+
+def test_forward_and_backward_follow_heading(qapp, demo, tmp_path):
+    import time
+
+    window = MainWindow(demo, Audio(enabled=False), tmp_path)
+    window.show()
+    window.activateWindow()
+    window.canvas.setFocus()
+    qapp.processEvents()
+    window.timer.stop()
+    player = demo.player
+    for heading, unit in [(0, (0, 1)), (90, (1, 0)), (180, (0, -1)),
+                          (-90, (-1, 0)), (45, (2 ** -0.5, 2 ** -0.5))]:
+        for key, sign in [(Qt.Key.Key_Up, 1), (Qt.Key.Key_Down, -1)]:
+            player.x = player.y = 0
+            player.heading = heading
+            QTest.keyPress(window.canvas, key)
+            window.last_time = time.perf_counter() - 0.1
+            window.tick()
+            QTest.keyRelease(window.canvas, key)
+            assert (player.x, player.y) == pytest.approx(
+                tuple(v * sign * player.speed * 0.1 for v in unit), abs=0.001)
+            assert (player.heading - heading) % 360 == 0
+    window.dirty = False
+    window.close()
+
+
+def test_arrow_turning_keeps_player_position_and_map_north_up(qapp, demo, tmp_path):
+    import time
+
+    window = MainWindow(demo, Audio(enabled=False), tmp_path)
+    window.show()
+    window.activateWindow()
+    window.canvas.setFocus()
+    qapp.processEvents()
+    window.timer.stop()
+    position = (demo.player.x, demo.player.y)
+    north = window.canvas.to_screen((position[0], position[1] + 10))
+    for key, expected_heading in [(Qt.Key.Key_Right, 9), (Qt.Key.Key_Left, 0)]:
+        QTest.keyPress(window.canvas, key)
+        window.last_time = time.perf_counter() - 0.1
+        window.tick()
+        QTest.keyRelease(window.canvas, key)
+        assert abs(demo.player.heading - expected_heading) < 0.01
+        assert (demo.player.x, demo.player.y) == position
+        assert window.canvas.to_screen((position[0], position[1] + 10)) == north
+    for key in (Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D):
+        QTest.keyPress(window.canvas, key)
+        assert window.canvas.movement() == (0, 0, 0)
+        assert key not in window.canvas.keys
+        QTest.keyRelease(window.canvas, key)
+    window.dirty = False
+    window.close()
 
 
 def click_world(canvas, xy):
@@ -49,7 +104,7 @@ def test_movement_keys_clear_when_editing_properties(qapp, demo, tmp_path):
     window.activateWindow()
     window.canvas.setFocus()
     qapp.processEvents()
-    QTest.keyPress(window.canvas, Qt.Key.Key_W)
+    QTest.keyPress(window.canvas, Qt.Key.Key_Up)
     assert window.canvas.movement()[1] == 1
     window.inspector.tabs.setFocus()
     qapp.processEvents()

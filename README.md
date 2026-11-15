@@ -16,7 +16,11 @@ cd C:\Dev\openal-explore
 
 Alternatively, `./run.ps1` forwards arguments to the same command. On first run,
 the demo generates three short mono WAV files in `samples/`: a pulsing beacon,
-a chime, and an engine sound. **File → Load demo scene** restores this scene.
+a chime, and an engine sound. It also places the available `samples/ogg/` files
+around an outer ring: the ten included samples are 65 metres from the starting
+player position and approximately 40 metres apart. Each has a 26-metre audible
+radius, so walk towards a source to hear it without the whole collection playing
+at once. **File → Load demo scene** restores this scene.
 
 ```powershell
 # Open a saved scene
@@ -45,8 +49,8 @@ when editing a property or switching applications.
 
 | Control | Action |
 | --- | --- |
-| WASD / cursor arrows | Move in world directions |
-| Q / E | Turn listener left/right |
+| Up / Down | Move forward/backward along the player's heading |
+| Left / Right or Q / E | Turn listener left/right; map stays north-up |
 | Mouse wheel | Zoom, keeping player centred |
 | 1 | Inspect; select a source and drag it or its entire path |
 | 2 | Add a sound point with one click |
@@ -82,7 +86,7 @@ from the last point back to the first; back-and-forth paths reverse at their end
 - EFX low-pass filtering, high-frequency gain, air absorption, and a reverb send.
 
 **Player / listener** properties include coordinates, altitude, movement speed,
-facing direction, face-movement mode, master volume, HRTF, all seven OpenAL
+facing direction, master volume, HRTF, all seven OpenAL
 distance models, Doppler factor, speed of sound, and shared reverb gain/decay.
 Unsupported HRTF/EFX controls are disabled. HRTF reports the device's actual
 status, since an output device may deny a request. Use headphones to hear HRTF.

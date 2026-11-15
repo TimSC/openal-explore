@@ -53,7 +53,6 @@ class Player:
     altitude: float = 1.7
     heading: float = 0.0
     speed: float = 6.0
-    face_movement: bool = False
 
 
 @dataclass
