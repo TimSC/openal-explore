@@ -1,7 +1,7 @@
 """OpenAL resources stay on the Qt thread; QTimer drives update(), never wait()."""
 from __future__ import annotations
 
-from dataclasses import astuple, dataclass, field
+from dataclasses import astuple, dataclass
 import math
 from pathlib import Path
 
@@ -21,11 +21,10 @@ class Playback:
     state: str = "Ready"
     mode: str = "auto"
     streaming: bool = False
-    reader: object = None
-    chunks: list = field(default_factory=list)
-    eof: bool = False
+    stream: object = None
     buffered: float = 0.0
     underruns: int = 0
+    underrun_base: int = 0
     fx: object = None
     fx_slot: object = None
     fx_type: str = "NONE"
@@ -57,6 +56,8 @@ class Audio:
         try:
             import openal_py as al
             self.al = al
+            if not hasattr(al, "StreamingSource") or not hasattr(al.Buffer, "upload_pcm"):
+                raise RuntimeError("Install the updated openal-py wheel with streaming and mono-loading support; see README.md")
             self.device = device if device is not None else al.Device.open()
             attributes = {"ALC_MAX_AUXILIARY_SENDS": 2} if self.device.supports("ALC_EXT_EFX") else None
             try:
@@ -82,39 +83,30 @@ class Audio:
             self.close()
 
     def _load(self, filename):
-        import soundfile as sf
         path = Path(filename).resolve()
         stat = path.stat()
         key = str(path), stat.st_mtime_ns, stat.st_size
         if key not in self.buffers:
-            data, rate = sf.read(path, dtype="float32", always_2d=True)
-            if not len(data):
+            buffer = self.context.load(path, mono=True, format=self.al.AudioFormat.MONO16)
+            if buffer.frame_count == 0:
+                buffer.close()
                 raise ValueError("The audio file is empty")
-            # OpenAL spatializes mono buffers. Explicit downmix also handles stereo assets.
-            self.buffers[key] = self.context.buffer_from_pcm(
-                self._pcm(data), format=self.al.AudioFormat.MONO16, sample_rate=rate)
+            self.buffers[key] = buffer
         return self.buffers[key]
 
     @staticmethod
-    def _pcm(data):
-        import numpy as np
-        mono = np.nan_to_num(data.mean(axis=1), nan=0.0, posinf=1.0, neginf=-1.0)
-        return (np.clip(mono, -1, 1) * 32767).astype(np.int16).tobytes()
-
-    @staticmethod
     def _release(p):
-        if p.source is not None:
+        if p.stream is not None:
+            # StreamingSource owns its source, buffer pool and decoder.
+            p.stream.close()
+            p.stream = None
+            p.source = None
+        elif p.source is not None:
             p.source.close()
             p.source = None
         if p.filter is not None:
             p.filter.close()
             p.filter = None
-        for chunk in p.chunks:
-            chunk.close()
-        p.chunks.clear()
-        if p.reader is not None:
-            p.reader.close()
-            p.reader = None
         if p.fx_slot is not None:
             p.fx_slot.close()
             p.fx_slot = None
@@ -163,8 +155,8 @@ class Audio:
                     self.device.reset(hrtf=s.hrtf)
                 self.hrtf_actual = self.device.hrtf_status.name.replace("_", " ").title()
             except Exception as exc:
-                # Some outputs advertise the extension but cannot reset (e.g. loopback).
-                # An optional rendering feature must not stop all scene playback.
+                # Optional rendering failures must not stop scene playback.
+                # Updated openal-py preserves loopback format during HRTF reset.
                 self.hrtf = False
                 self.hrtf_actual = f"Request unavailable: {exc}"
         self.settings_key = key
@@ -222,50 +214,37 @@ class Audio:
         if self.effect_sends >= 2 or p.fx_slot is None:
             p.source.set_send(0, self.slot if e.reverb_send else None)
 
-    def _chunk(self, e, p):
-        data = p.reader.read(8192, dtype="float32", always_2d=True)
-        if not len(data) and e.looping:
-            p.reader.seek(0)
-            data = p.reader.read(8192, dtype="float32", always_2d=True)
-        if not len(data):
-            p.eof = True
-            return None
-        return self.context.buffer_from_pcm(self._pcm(data), format=self.al.AudioFormat.MONO16,
-                                            sample_rate=p.reader.samplerate)
-
-    def _fill(self, e, p):
-        if p.eof and e.looping:
-            p.eof = False
-            p.reader.seek(0)
-        while len(p.chunks) < 4 and not p.eof:
-            chunk = self._chunk(e, p)
-            if chunk is not None:
-                p.chunks.append(chunk)
-                p.source.queue_buffers([chunk])
-
     def _create_source(self, e, p):
         import soundfile as sf
-        p.streaming = e.playback_mode == "stream" or (e.playback_mode == "auto" and sf.info(e.file).duration > 10)
+        metadata = sf.info(e.file)
+        if metadata.frames == 0:
+            raise ValueError("The audio file is empty")
+        p.streaming = e.playback_mode == "stream" or (e.playback_mode == "auto" and metadata.duration > 10)
         if p.streaming:
-            p.reader = sf.SoundFile(e.file)
-            if p.reader.frames == 0:
-                raise ValueError("The audio file is empty")
-            p.eof = False
-            p.source = self.context.create_source()
-            self._fill(e, p)
+            p.stream = self.al.StreamingSource.from_file(
+                self.context, e.file, mono=True, format=self.al.AudioFormat.MONO16,
+                chunk_frames=8192, queue_depth=4, looping=e.looping)
+            p.source = p.stream.source
+            p.underrun_base = p.underruns
         else:
             p.source = self.context.create_source(buffer=self._load(e.file))
 
-    def _pump(self, e, p, paused):
-        stopped = p.source.state == self.al.SourceState.STOPPED
-        for chunk in p.source.unqueue_buffers():
-            p.chunks.remove(chunk)
-            chunk.close()
-        self._fill(e, p)
-        if stopped and p.chunks and not paused and not p.paused:
-            p.underruns += 1
-            p.source.play()
-        p.buffered = max(0, sum(c.duration for c in p.chunks) - p.source.offset_seconds)
+    def _update_stream(self, p, paused):
+        stream = p.stream
+        if paused:
+            stream.pause()
+        elif p.paused:
+            stream.resume()
+        stream.update()
+        p.buffered = stream.buffered_duration
+        p.underruns = p.underrun_base + stream.underrun_count
+        if stream.finished:
+            p.finished = True
+            p.state = "Finished · Replay to retrigger"
+            self._release(p)
+        else:
+            p.paused = paused
+            p.state = "Paused" if paused else "Playing"
 
     def _configure(self, e, p):
         key = (e.gain, e.pitch, e.looping, e.reference_distance, e.max_distance, e.rolloff,
@@ -275,7 +254,11 @@ class Audio:
         if p.config == key:
             return
         src = p.source
-        src.gain, src.pitch, src.looping = e.gain, e.pitch, e.looping and not p.streaming
+        src.gain, src.pitch = e.gain, e.pitch
+        if p.stream is not None:
+            p.stream.looping = e.looping
+        else:
+            src.looping = e.looping
         src.reference_distance, src.max_distance, src.rolloff_factor = e.reference_distance, e.max_distance, e.rolloff
         src.cone_inner_angle = e.cone_inner if e.directional else 360.0
         src.cone_outer_angle = e.cone_outer if e.directional else 360.0
@@ -346,13 +329,17 @@ class Audio:
                 self._create_source(e, p)
                 self._configure(e, p)
                 self._position(e, p.source, position, velocity, paused)
-                p.source.play()
+                if p.stream is not None:
+                    p.stream.play()
+                else:
+                    p.source.play()
             else:
                 self._configure(e, p)
                 self._position(e, p.source, position, velocity, paused)
             src = p.source
-            if p.streaming:
-                self._pump(e, p, paused)
+            if p.stream is not None:
+                self._update_stream(p, paused)
+                return
             if paused:
                 if src.state == self.al.SourceState.PLAYING:
                     src.pause()
@@ -423,10 +410,11 @@ class Audio:
                     read("OpenAL version", lambda: ctx.version),
                     read("ALC version", lambda: ".".join(map(str, device.version))),
                     read("Output device", lambda: device.spec),
-                    f"EFX available: {bool(self.efx)}",
+                    f"EFX available: {self.efx}",
                     f"Auxiliary sends per source: {self.effect_sends}",
-                    read("HRTF extension", lambda: bool(device.supports("ALC_SOFT_HRTF"))),
+                    read("HRTF extension", lambda: device.supports("ALC_SOFT_HRTF")),
                     f"HRTF request status: {self.hrtf_actual}",
+                    "Streaming backend: openal-py.StreamingSource (reusable PCM buffers)",
                 ]
                 if device.supports("ALC_SOFT_HRTF"):
                     lines += [read("HRTF enabled", lambda: device.hrtf_enabled),

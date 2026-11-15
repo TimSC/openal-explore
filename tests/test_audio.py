@@ -95,7 +95,7 @@ def test_missing_file_does_not_break_other_sources(audio, demo):
     assert not audio.error
 
 
-def test_soundfile_decodes_stereo_flac_to_spatial_mono(audio, demo, tmp_path):
+def test_wrapper_decodes_stereo_flac_to_spatial_mono(audio, demo, tmp_path):
     import soundfile as sf
     rate = 22050
     signal = np.sin(2 * np.pi * 300 * np.arange(rate) / rate) * 0.5
@@ -116,6 +116,7 @@ def test_soundfile_decodes_stereo_flac_to_spatial_mono(audio, demo, tmp_path):
 
 
 def test_hrtf_and_global_acoustic_settings(audio, demo):
+    hrtf_supported = audio.hrtf
     demo.settings.hrtf = True
     demo.settings.distance_model = "LINEAR_CLAMPED"
     demo.settings.doppler = 2
@@ -129,6 +130,49 @@ def test_hrtf_and_global_acoustic_settings(audio, demo):
         assert audio.context.speed_of_sound == pytest.approx(300)
     if audio.hrtf:
         assert audio.hrtf_actual != "Unavailable"
+    if hrtf_supported:
+        assert audio.hrtf  # A loopback reset should no longer disable the control.
+        assert audio.device.hrtf_enabled
+        with audio.context.activate():
+            assert len(audio.device.render(10)) == 40  # Retains stereo PCM16 output.
     demo.settings.hrtf = False
     audio.update(demo)
     assert not audio.error
+    if hrtf_supported:
+        assert not audio.device.hrtf_enabled
+
+
+@pytest.mark.parametrize("subtype", ["PCM_24", "FLOAT"])
+@pytest.mark.parametrize("playback_mode", ["static", "stream"])
+def test_wrapper_loads_high_resolution_wav_as_spatial_mono(audio, tmp_path, subtype, playback_mode):
+    import soundfile as sf
+    from openal_explore.model import Emitter
+
+    rate = 48000
+    signal = np.sin(2 * np.pi * 440 * np.arange(rate // 4) / rate) * 0.4
+    path = tmp_path / f"high-resolution-{subtype}.wav"
+    sf.write(path, np.column_stack((signal, signal * 0.5)), rate, subtype=subtype)
+    e = Emitter(file=str(path), points=[[0, 2]], playback_mode=playback_mode)
+    scene = Scene(emitters=[e])
+    audio.update(scene)
+    assert audio.state(e.id) == "Playing", audio.playbacks[e.id].error
+    with audio.context.activate():
+        p = audio.playbacks[e.id]
+        if p.stream is not None:
+            assert p.stream.decoder.format.channels == 1
+            assert p.stream.decoder.format.bits == 16
+            assert p.stream.decoder.sample_rate == rate
+        else:
+            buffer = p.source.buffer
+            assert buffer.channels == 1 and buffer.bits == 16
+            assert buffer.frame_count == len(signal)
+    assert energy(render(audio)).max() > 0
+    assert sf.info(path).subtype == subtype
+
+
+def test_capability_queries_are_booleans(audio):
+    assert type(audio.device.supports("ALC_EXT_EFX")) is bool
+    assert audio.device.supports("ALC_EXPLORER_nonexistent") is False
+    with audio.context.activate():
+        assert type(audio.context.supports("AL_SOFT_loop_points")) is bool
+        assert audio.context.supports("AL_EXPLORER_nonexistent") is False

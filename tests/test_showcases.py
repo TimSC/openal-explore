@@ -154,19 +154,40 @@ def test_doppler_toggle_changes_rendered_pitch(audio, tmp_path):
     assert shifted > original * 1.1
 
 
-def test_streaming_is_bounded_loops_pauses_and_counts_underruns(audio, tmp_path):
+def test_streaming_is_bounded_loops_pauses_and_counts_underruns(audio, tmp_path, monkeypatch):
+    uploads = []
+    closed_decoders = []
+    upload = audio.al.Buffer.upload_pcm
+    close_decoder = audio.al.SoundFileDecoder.close
+
+    def record_upload(buffer, data, format, sample_rate):
+        uploads.append(buffer)
+        return upload(buffer, data, format, sample_rate)
+
+    def record_close(decoder):
+        closed_decoders.append(decoder)
+        return close_decoder(decoder)
+
+    monkeypatch.setattr(audio.al.Buffer, "upload_pcm", record_upload)
+    monkeypatch.setattr(audio.al.SoundFileDecoder, "close", record_close)
     e = Emitter(file=str(tone(tmp_path, seconds=0.25)), playback_mode="stream", points=[[0, 2]])
     scene = Scene(emitters=[e])
     audio.update(scene)
     p = audio.playbacks[e.id]
-    assert p.streaming and p.reader is not None
-    assert len(p.chunks) == 4
+    assert p.streaming and isinstance(p.stream, audio.al.StreamingSource)
+    with audio.context.activate():
+        assert p.source.buffers_queued == 4
     assert len(audio.buffers) == 0
     for _ in range(30):
         assert np.abs(render(audio, 960)).max() > 0
         audio.update(scene)
         assert p.state == "Playing", p.error
-        assert 0 < len(p.chunks) <= 4
+        with audio.context.activate():
+            assert 0 < p.source.buffers_queued <= 4
+    pool = set(uploads)
+    assert len(pool) == 4 and len(uploads) > 4  # Refill reuses the original buffer pool.
+    with audio.context.activate():
+        assert all(b.size <= 8192 * 2 for b in pool)
     assert p.underruns == 0
     audio.update(scene, paused=True)
     buffered = p.buffered
@@ -179,11 +200,11 @@ def test_streaming_is_bounded_loops_pauses_and_counts_underruns(audio, tmp_path)
     assert p.underruns == 1
     assert p.state == "Playing"
     assert "1 underruns" in audio.stream_info(e.id)
-    reader, chunks = p.reader, list(p.chunks)
+    stream, decoder = p.stream, p.stream.decoder
     e.enabled = False
     audio.update(scene)
-    assert reader.closed
-    assert all(b.closed for b in chunks)
+    assert stream.closed and decoder in closed_decoders
+    assert all(b.closed for b in pool)
 
 
 def test_streamed_one_shot_and_auto_mode(audio, tmp_path):
@@ -193,19 +214,22 @@ def test_streamed_one_shot_and_auto_mode(audio, tmp_path):
     render(audio, 12000)
     audio.update(scene)
     assert audio.state(e.id).startswith("Finished")
-    assert audio.playbacks[e.id].reader is None
+    assert audio.playbacks[e.id].stream is None
     assert audio.playbacks[e.id].underruns == 0
     e.file = str(tone(tmp_path, seconds=11))
     e.playback_mode = "auto"
     audio.update(scene)
     p = audio.playbacks[e.id]
     assert p.streaming
+    assert p.stream.chunk_frames == 8192 and p.stream.queue_depth == 4
     with audio.context.activate():
-        assert sum(b.size for b in p.chunks) <= 4 * 8192 * 2
+        assert p.source.buffers_queued <= 4
+        assert p.stream.buffered_duration <= 4 * 8192 / 48000
     assert not audio.buffers
     e.playback_mode = "static"
     audio.update(scene)
     assert not p.streaming
+    assert p.stream is None
     assert len(audio.buffers) == 1
 
 

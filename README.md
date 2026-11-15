@@ -38,16 +38,19 @@ hall**, and **Open air** rectangles demonstrate reverb environments.
 .\.venv\Scripts\python.exe run.py --empty
 ```
 
-To recreate the environment, use Python 3.11 and the matching wheel:
+To recreate the environment, use Python 3.11 and the updated matching wheel:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install C:\Dev\openal-py\wheelhouse\windows.cd529808ce214dd8b912c1fbb494ce46\openal_py-0.1.0-cp311-cp311-win_amd64.whl
+.\.venv\Scripts\python.exe -m pip install --force-reinstall --no-deps C:\Dev\openal-py\wheelhouse\windows.0230aef02c30438d958cd955db3ccc9e\openal_py-0.1.0-cp311-cp311-win_amd64.whl
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
 ```
 
 For a different Python version, install its matching `win_amd64` wheel from
 `C:\Dev\openal-py\wheelhouse\` first. The demo does not modify the wrapper repository.
+The updated wheel still reports version `0.1.0`; older builds of that version
+do not include the required `StreamingSource`, reusable PCM buffers and mono
+loading APIs. Force-reinstall the updated wheel when replacing an older build.
 
 ## Controls
 
@@ -160,23 +163,30 @@ independent. Disabling a source stops its audio and freezes its path motion.
 
 ## Files and scenes
 
-[SoundFile](https://pypi.org/project/soundfile/) handles decoding through
-libsndfile. WAV, FLAC, OGG and other installed decoder formats can be selected.
-Decoded channels are averaged to mono and converted to PCM16 for OpenAL
-positional playback; the original files are unchanged. **Buffering → Auto**
+[SoundFile](https://pypi.org/project/soundfile/) provides optional decoding to
+openal-py through libsndfile. Mono/stereo WAV, FLAC, OGG and other installed
+decoder formats can be selected. Static sounds use `Context.load(mono=True,
+format=AudioFormat.MONO16)`, including the wrapper's SoundFile fallback for
+24-bit and floating-point WAVs. Stereo channels are averaged to mono and
+converted to PCM16 for positional playback; original files are unchanged.
+**Buffering → Auto**
 streams recordings longer than 10 seconds, including the ten supplied Ogg
 samples. **Stream** forces streaming for any length; **Static** loads the whole
 file and caches its OpenAL buffer until scene replacement.
 
-Streaming decodes small chunks with SoundFile, queues up to four 8192-frame mono
-buffers in OpenAL, then reclaims/refills processed chunks on the Qt timer. The
+Streaming uses `openal_py.StreamingSource.from_file(mono=True)` with four
+8192-frame buffers. The wrapper owns the decoder and native source, and reuses
+the same buffer pool through `Buffer.upload_pcm()` as the Qt timer calls
+`stream.update()`. The demo sets spatial/effect properties on the exposed source
+and controls playback through the helper. The
 sound inspector shows queued audio time and underruns. A drained queue with
 more audio available is restarted and counted as an underrun; natural one-shot
 completion is not. Looping is handled by seeking the decoder, so it also works
 for short streamed files. Disabling, leaving range, replaying or changing scenes
 closes decoder handles and releases queued buffers. Changing buffering mode
 restarts that sound. Underruns count over the source's playback session and reset
-on Replay or file/mode changes. Decoding and OpenAL calls stay on the Qt thread,
+on Replay or file/mode changes. Buffered time and underruns come from the
+helper's `buffered_duration` and `underrun_count` properties. Decoding and OpenAL calls stay on the Qt thread,
 so a long UI stall can still cause an underrun; no hidden audio thread is used.
 
 To convert a folder of WAV assets to Ogg Vorbis using SoundFile:
@@ -208,7 +218,9 @@ loopback rendering** for stereo panning, source/listener position and velocity,
 all five playground effects, rendered cone attenuation and Doppler pitch,
 reverb transitions, bounded streaming/looping, deliberate underrun recovery,
 pause/resume, one-shots and range transitions. Qt tests also exercise zone drawing,
-moving, resizing and presets. Loopback tests do not
+moving, resizing and presets. Integration checks verify reusable streaming
+buffers, mono decoding, high-resolution WAV fallback, boolean capabilities,
+and HRTF reset without losing the loopback output format. Loopback tests do not
 play through the speakers. Perceptual headphone/HRTF listening remains a manual
 check.
 
