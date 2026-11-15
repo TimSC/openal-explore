@@ -1,0 +1,28 @@
+Microcompositions sample credits
+================================
+
+Microcompositions pack by tim.kahn
+Creator: https://freesound.org/people/tim.kahn/
+Source pack: https://freesound.org/people/tim.kahn/packs/29059/
+
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+This credit applies to the following samples in wav/ and their corresponding
+Ogg Vorbis versions in ogg/:
+
+  871794__timkahn__bndkox
+  872215__timkahn__iansli
+  873493__timkahn__cdlziss
+  873611__timkahn__oalaic
+  873677__timkahn__oanzliefn
+  874213__timkahn__yemxid
+  875799__timkahn__venozidka
+  878400__timkahn__bzlasdijcf
+  879537__timkahn__ozldmen
+  879900__timkahn__hualdk
+
+Changes: The WAV samples were converted to Ogg Vorbis using lossy compression.
+Sample rates, channel counts, and frame counts were preserved. The original
+WAV files were retained. During positional playback, the demo downmixes audio
+to mono and converts it to PCM16 in memory; this does not alter the files.
