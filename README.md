@@ -6,15 +6,26 @@ sources travelling along editable polylines.
 
 ## Run
 
-The project environment is already set up with Python 3.11, your Windows wheel,
-PySide6, SoundFile, NumPy and pytest:
+Use Python 3.11 or newer. From the project directory, create and activate a
+virtual environment, then install the project and its test dependencies:
 
-```powershell
-cd C:\Dev\openal-explore
-.\.venv\Scripts\python.exe run.py
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[test]"
+python run.py
 ```
 
-Alternatively, `./run.ps1` forwards arguments to the same command. On first run,
+On Debian/Ubuntu, install `python3-venv` with `sudo apt install python3-venv`
+if virtual environment creation is unavailable.
+
+[`openal-py`](https://pypi.org/project/openal-py/) is available on PyPI and is
+installed automatically with the project dependencies, alongside PySide6,
+SoundFile and NumPy. Its platform wheels bundle OpenAL Soft, so a separate
+system OpenAL installation is normally unnecessary.
+
+On first run,
 the demo generates three short mono WAV files in `samples/`: a pulsing beacon,
 a chime, and an engine sound. It also places the available `samples/ogg/` files
 around an outer ring of radius 65 metres, with locations approximately 40 metres
@@ -29,28 +40,17 @@ speakers have narrow cones and visible arrows. The **Stone cave**, **Concert
 hall**, and **Open air** rectangles demonstrate reverb environments.
 **File → Load demo scene** restores this scene.
 
-```powershell
+```bash
 # Open a saved scene
-.\.venv\Scripts\python.exe run.py scene.json
+python run.py scene.json
 
 # Edit with no audio device, or start with an empty scene
-.\.venv\Scripts\python.exe run.py --no-audio
-.\.venv\Scripts\python.exe run.py --empty
+python run.py --no-audio
+python run.py --empty
 ```
 
-To recreate the environment, use Python 3.11 and the updated matching wheel:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --force-reinstall --no-deps C:\Dev\openal-py\wheelhouse\windows.0230aef02c30438d958cd955db3ccc9e\openal_py-0.1.0-cp311-cp311-win_amd64.whl
-.\.venv\Scripts\python.exe -m pip install -e ".[test]"
-```
-
-For a different Python version, install its matching `win_amd64` wheel from
-`C:\Dev\openal-py\wheelhouse\` first. The demo does not modify the wrapper repository.
-The updated wheel still reports version `0.1.0`; older builds of that version
-do not include the required `StreamingSource`, reusable PCM buffers and mono
-loading APIs. Force-reinstall the updated wheel when replacing an older build.
+These commands assume the virtual environment is active. In a new terminal,
+run `source .venv/bin/activate` from the project directory first.
 
 ## Controls
 
@@ -191,15 +191,15 @@ so a long UI stall can still cause an underrun; no hidden audio thread is used.
 
 To convert a folder of WAV assets to Ogg Vorbis using SoundFile:
 
-```powershell
-.\.venv\Scripts\python.exe tools\convert_audio.py samples\wav samples\ogg
+```bash
+python tools/convert_audio.py samples/wav samples/ogg
 ```
 
 This preserves sample rates, channel counts and frame counts, keeps the WAVs,
 and refuses to overwrite existing outputs. Ogg Vorbis compression is lossy.
 
 Scenes save as versioned JSON. Audio paths are relative to the scene file when
-possible, and absolute when on a different Windows drive. Scene JSON refers to
+possible, and absolute otherwise. Scene JSON refers to
 sound files; it does not embed them. Save/loading retains editable properties
 and control points, but resets playback and path animation to their beginnings.
 The player position is saved. Changes prompt for save before closing/replacing
@@ -208,8 +208,8 @@ Fix the path or press Replay / retry sound after fixing the file.
 
 ## Verification
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+```bash
+python -m pytest -q
 ```
 
 Tests cover arc-length movement, reversal and closed paths, JSON round trips and
