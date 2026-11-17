@@ -1,6 +1,6 @@
 # OpenAL Explore
 
-A PySide6 scene editor and spatial audio demo for `openal-py`. The player stays
+A PySide6 scene editor and spatial audio demo for [openal-py](https://github.com/TimSC/openal-py). The player stays
 at the centre while the world scrolls. Audio comes from stationary points or
 sources travelling along editable polylines.
 
