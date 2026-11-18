@@ -289,10 +289,11 @@ def save_scene(scene: Scene, path: Path):
     for e in scene.emitters:
         data = {f.name: getattr(e, f.name) for f in fields(e) if not f.metadata.get("runtime")}
         if e.file:
+            absolute_file = str(Path(e.file).resolve())
             try:
-                data["file"] = os.path.relpath(Path(e.file).resolve(), path.parent)
+                data["file"] = os.path.relpath(absolute_file, path.parent)
             except ValueError:  # A sound on a different Windows drive stays absolute.
-                pass
+                data["file"] = absolute_file
         emitters.append(data)
     data = {"version": 1, "player": asdict(scene.player), "settings": asdict(scene.settings),
             "emitters": emitters, "zones": [asdict(z) for z in scene.zones]}

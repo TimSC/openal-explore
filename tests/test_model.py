@@ -1,5 +1,6 @@
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -86,3 +87,47 @@ def test_source_extensions_round_trip_and_legacy_defaults(demo, tmp_path):
     assert legacy.source_resampler == -1
     assert legacy.source_radius == 0
     assert not legacy.show_latency
+
+
+def test_asset_paths_follow_scene_directory_after_move(tmp_path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    samples = bundle / "samples"
+    scenes = bundle / "scenes"
+    samples.mkdir(parents=True)
+    scenes.mkdir()
+    sample = samples / "a sound.wav"
+    sample.touch()
+    scene = Scene(emitters=[Emitter(file=str(sample))])
+    output = scenes / "scene.json"
+    save_scene(scene, output)
+    raw = json.loads(output.read_text())
+    assert raw["emitters"][0]["file"] == str(Path("..") / "samples" / sample.name)
+    moved = tmp_path / "moved"
+    bundle.rename(moved)
+    monkeypatch.chdir(tmp_path)
+    loaded = load_scene(moved / "scenes" / "scene.json")
+    assert loaded.emitters[0].file == str(moved / "samples" / sample.name)
+    assert Path(loaded.emitters[0].file).is_file()
+    save_as = moved / "copy.json"
+    save_scene(loaded, save_as)
+    assert json.loads(save_as.read_text())["emitters"][0]["file"] == str(Path("samples") / sample.name)
+
+
+def test_asset_path_falls_back_to_absolute_when_relpath_impossible(tmp_path, monkeypatch):
+    import openal_explore.model as model
+
+    monkeypatch.chdir(tmp_path)
+    scene = Scene(emitters=[Emitter(file="sample.wav"), Emitter(file="")])
+
+    def different_drive(*args):
+        raise ValueError("path is on a different drive")
+
+    monkeypatch.setattr(model.os.path, "relpath", different_drive)
+    output = tmp_path / "scene.json"
+    save_scene(scene, output)
+    raw = json.loads(output.read_text())
+    assert raw["emitters"][0]["file"] == str(tmp_path / "sample.wav")
+    assert raw["emitters"][1]["file"] == ""
+    loaded = load_scene(output)
+    assert loaded.emitters[0].file == str(tmp_path / "sample.wav")
+    assert loaded.emitters[1].file == ""
