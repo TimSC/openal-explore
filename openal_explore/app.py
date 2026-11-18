@@ -149,6 +149,7 @@ class MainWindow(QMainWindow):
         menu = self.menuBar().addMenu("&Help")
         self.action(menu, "Controls & OpenAL features", self.show_help)
         self.action(menu, "OpenAL information…", self.show_audio_info)
+        self.action(menu, "About", self.show_credits)
         toolbar = QToolBar("Tools", self)
         toolbar.setObjectName("tools")
         toolbar.setMovable(False)
@@ -453,6 +454,28 @@ class MainWindow(QMainWindow):
             "Effects tab: echo, chorus, flanger, distortion or equalizer, plus room reverb.\n"
             "HRTF works best with headphones. Optional features depend on the output device.\n"
             "The Properties and Scene objects panels can float, move and dock. Reopen them under View.")
+
+    def show_credits(self):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("OpenAL Explore — Credits")
+        dialog.setTextFormat(Qt.TextFormat.RichText)
+        dialog.setText(
+            "<h3>OpenAL Explore</h3>"
+            "<p>Copyright © 2026 Tim Sheerman-Chase. "
+            'Code licensed under the <a href="https://opensource.org/license/bsd-3-clause">'
+            "BSD 3-Clause Licence</a>.</p>"
+            '<p><a href="https://github.com/TimSC/openal-explore">GitHub repository</a></p>'
+            "<p>Built with PySide6, openal-py, OpenAL Soft, SoundFile and NumPy.</p>"
+            "<p>Samples: <b>Microcompositions</b> by "
+            '<a href="https://freesound.org/people/tim.kahn/">tim.kahn</a>, from '
+            '<a href="https://freesound.org/people/tim.kahn/packs/29059/">Freesound</a>, '
+            'licensed under <a href="https://creativecommons.org/licenses/by/4.0/">'
+            "CC BY 4.0</a>."
+            "Full sample credits are in samples/CREDITS.txt.</p>"
+        )
+        dialog.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.exec()
 
     def show_audio_info(self):
         if self.audio_info_dialog is None:
