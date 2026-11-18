@@ -132,6 +132,11 @@ class Emitter:
     lowpass_hf: float = 0.3
     reverb_send: bool = True
     directional: bool = False
+    source_distance_model: str = "DEFAULT"
+    source_resampler: int = -1
+    source_spatialize: str = "DEFAULT"
+    source_radius: float = 0.0
+    show_latency: bool = False
     playback_mode: str = "auto"
     effect_type: str = "NONE"
     effect_gain: float = 0.35
@@ -229,6 +234,15 @@ def validate(scene: Scene):
         ids.add(e.id)
         if e.playback_mode not in ("auto", "static", "stream") or e.effect_type not in {"NONE", *EFFECTS}:
             raise ValueError("Unknown playback mode or effect")
+        if e.source_distance_model not in {"DEFAULT", "NONE", "INVERSE", "INVERSE_CLAMPED", "LINEAR", "LINEAR_CLAMPED", "EXPONENT", "EXPONENT_CLAMPED"}:
+            raise ValueError("Unknown source distance model")
+        if e.source_spatialize not in {"DEFAULT", "OFF", "ON"}:
+            raise ValueError("Unknown source spatialization mode")
+        if type(e.source_resampler) is not int or e.source_resampler < -1:
+            raise ValueError("Invalid source resampler")
+        if type(e.show_latency) is not bool:
+            raise ValueError("Invalid latency toggle")
+        _number(e.source_radius, 0, 10000, "Source radius")
         _number(e.effect_gain, 0, 1, "Effect return volume")
         if not isinstance(e.effect_params, dict):
             raise ValueError("Effect parameters must be an object")

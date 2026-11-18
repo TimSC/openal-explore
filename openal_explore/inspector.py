@@ -275,6 +275,27 @@ class Inspector(QWidget):
                     "OpenAL attenuation clamp distance. This is not an automatic mute radius.")
         self.number(form, "Rolloff factor", e, "rolloff", 0, 10, 0.1,
                     tip="0 removes distance attenuation; 1 is the normal curve.")
+        form = self.group(page, "OpenAL source extensions · opt in")
+        choices = [("DEFAULT", "Off · use listener distance model")] + [
+            (name, name.replace("_", " ").title()) for name in
+            ("NONE", "INVERSE", "INVERSE_CLAMPED", "LINEAR", "LINEAR_CLAMPED", "EXPONENT", "EXPONENT_CLAMPED")]
+        controls = [
+            ("AL_EXT_source_distance_model", self.combo(form, "Source distance model", e, "source_distance_model", choices)),
+            ("AL_SOFT_source_resampler", self.combo(form, "Source resampler", e, "source_resampler",
+                [(-1, "Off · device default")] + [(i, f"Resampler {i}") for i in range(self.audio.resampler_count)])),
+            ("AL_SOFT_source_spatialize", self.combo(form, "Spatialization override", e, "source_spatialize",
+                [("DEFAULT", "Off · OpenAL automatic"), ("ON", "Force on"), ("OFF", "Force off")])),
+            ("AL_EXT_SOURCE_RADIUS", self.number(form, "OpenAL source radius", e, "source_radius", 0, 10000, 0.1, " m",
+                "0 is a point source. This controls emitter size, independently of the audible cutoff radius.")),
+            ("AL_SOFT_source_latency", self.check(form, "Measure source latency", e, "show_latency")),
+        ]
+        for extension, control in controls:
+            supported = extension in self.audio.source_extensions
+            control.setEnabled(supported)
+            control.setToolTip(control.toolTip() + f"\n{extension}" + ("" if supported else " · unavailable"))
+        self.latency_status = QLabel()
+        form.addRow("Output latency", self.latency_status)
+        self.note(page, "Overrides default to off. Automatic spatialization preserves normal positional mono playback.")
         form = self.group(page, "Directional sound cone")
         self.check(form, "Directional speaker", e, "directional", "Enable cone attenuation and show a facing arrow on the map.")
         self.number(form, "Facing", e, "heading", -360, 360, 5, "°",
@@ -427,6 +448,7 @@ class Inspector(QWidget):
             self.title.setText(e.name)
             self.playback.setText(self.audio.state(e.id))
             self.stream_status.setText(self.audio.stream_info(e.id))
+            self.latency_status.setText(self.audio.latency_info(e))
             playback = self.audio.playbacks.get(e.id)
             self.effect_status.setText(playback.effect_message if playback and playback.effect_message else
                 f"{self.audio.effect_sends} effect sends available" if self.audio.efx else "EFX unavailable")

@@ -64,3 +64,25 @@ def test_invalid_scenes_rejected(demo, tmp_path, modify):
     file.write_text(json.dumps(data))
     with pytest.raises(ValueError):
         load_scene(file)
+
+
+def test_source_extensions_round_trip_and_legacy_defaults(demo, tmp_path):
+    path = tmp_path / "extensions.json"
+    e = demo.emitters[0]
+    values = dict(source_distance_model="LINEAR", source_resampler=0,
+                  source_spatialize="OFF", source_radius=2.5, show_latency=True)
+    for key, value in values.items():
+        setattr(e, key, value)
+    save_scene(demo, path)
+    loaded = load_scene(path).emitters[0]
+    assert {key: getattr(loaded, key) for key in values} == values
+    data = json.loads(path.read_text())
+    for emitter in data["emitters"]:
+        for key in values:
+            emitter.pop(key)
+    path.write_text(json.dumps(data))
+    legacy = load_scene(path).emitters[0]
+    assert legacy.source_distance_model == legacy.source_spatialize == "DEFAULT"
+    assert legacy.source_resampler == -1
+    assert legacy.source_radius == 0
+    assert not legacy.show_latency

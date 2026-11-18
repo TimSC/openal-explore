@@ -228,3 +228,23 @@ Code is split into `model.py` (data/motion/JSON), `audio.py` (OpenAL lifecycle a
 mixing), `canvas.py` (map/tools), `inspector.py` (properties) and `app.py` (window,
 timer and document actions). OpenAL stays on the creating Qt thread, with
 explicit context activation and deterministic shutdown.
+
+## OpenAL source extensions
+
+Sound → Spatial includes optional per-source OpenAL extension controls. All
+start off: distance model and resampler inherit their defaults, spatialization
+uses OpenAL's automatic mode, source radius is zero, and latency queries are off.
+Unsupported controls are disabled and identify their extension in the tooltip.
+
+- `AL_EXT_source_distance_model`: override the global distance model for this
+  source. Sources without an override continue to follow the global setting.
+- `AL_SOFT_source_resampler`: select a device-provided resampler by index.
+  Indices are implementation-specific; unavailable saved indices use the default.
+- `AL_SOFT_source_spatialize`: force spatialization on or off. Off here means
+  disabling the override; select **Force off** to disable spatialization itself.
+- `AL_EXT_SOURCE_RADIUS`: set the physical emitter radius in metres, independently
+  of the application's audible cutoff radius.
+- `AL_SOFT_source_latency`: opt into live output latency and playback-offset
+  telemetry for the active source. This is separate from queued buffer duration.
+
+These settings are saved with the scene; older scenes retain the default behavior.

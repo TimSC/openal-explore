@@ -50,6 +50,11 @@ class Audio:
         self.reverb_key = None
         self.zone_name = "Outside zones"
         self.unsupported_effects = {}
+        self.source_extensions = set()
+        self.resampler_count = 0
+        self.default_resampler = 0
+        self.source_distance_enabled = False
+        self.global_distance_model = "INVERSE_CLAMPED"
         if not enabled:
             self.error = "Audio disabled (--no-audio)"
             return
@@ -69,6 +74,13 @@ class Audio:
             with self.context.activate() as ctx:
                 self.efx = self.device.supports("ALC_EXT_EFX")
                 self.hrtf = self.device.supports("ALC_SOFT_HRTF")
+                self.source_extensions = {name for name in (
+                    "AL_EXT_source_distance_model", "AL_SOFT_source_resampler",
+                    "AL_SOFT_source_spatialize", "AL_EXT_SOURCE_RADIUS",
+                    "AL_SOFT_source_latency") if ctx.supports(name)}
+                if "AL_SOFT_source_resampler" in self.source_extensions:
+                    self.resampler_count = int(ctx.get_parameter("AL_NUM_RESAMPLERS_SOFT", kind="int"))
+                    self.default_resampler = int(ctx.get_parameter("AL_DEFAULT_RESAMPLER_SOFT", kind="int"))
                 self.info = f"{ctx.renderer} · {self.device.spec}"
                 if self.efx:
                     try:
@@ -250,10 +262,22 @@ class Audio:
         key = (e.gain, e.pitch, e.looping, e.reference_distance, e.max_distance, e.rolloff,
                e.cone_inner, e.cone_outer, e.cone_gain, e.air_absorption, e.lowpass,
                e.lowpass_hf, e.reverb_send, e.directional, p.streaming,
-               e.effect_type, e.effect_gain, tuple(sorted(e.effect_params.items())))
+               e.effect_type, e.effect_gain, tuple(sorted(e.effect_params.items())),
+               e.source_distance_model, e.source_resampler, e.source_spatialize,
+               e.source_radius, self.source_distance_enabled, self.global_distance_model)
         if p.config == key:
             return
         src = p.source
+        if "AL_EXT_source_distance_model" in self.source_extensions and self.source_distance_enabled:
+            model = self.global_distance_model if e.source_distance_model == "DEFAULT" else e.source_distance_model
+            src.set_parameter("AL_DISTANCE_MODEL", int(getattr(self.al.DistanceModel, model)))
+        if "AL_SOFT_source_resampler" in self.source_extensions:
+            index = e.source_resampler if 0 <= e.source_resampler < self.resampler_count else self.default_resampler
+            src.set_parameter("AL_SOURCE_RESAMPLER_SOFT", index)
+        if "AL_SOFT_source_spatialize" in self.source_extensions:
+            src.set_parameter("AL_SOURCE_SPATIALIZE_SOFT", {"DEFAULT": 2, "OFF": 0, "ON": 1}[e.source_spatialize])
+        if "AL_EXT_SOURCE_RADIUS" in self.source_extensions:
+            src.set_parameter("AL_SOURCE_RADIUS", float(e.source_radius))
         src.gain, src.pitch = e.gain, e.pitch
         if p.stream is not None:
             p.stream.looping = e.looping
@@ -280,6 +304,10 @@ class Audio:
             return
         try:
             with self.context.activate() as ctx:
+                self.global_distance_model = scene.settings.distance_model
+                if "AL_EXT_source_distance_model" in self.source_extensions:
+                    self.source_distance_enabled = any(e.source_distance_model != "DEFAULT" for e in scene.emitters)
+                    (ctx.enable if self.source_distance_enabled else ctx.disable)("AL_SOURCE_DISTANCE_MODEL")
                 self._settings(scene.settings)
                 self._reverb(scene, dt)
                 player = scene.player
@@ -297,6 +325,21 @@ class Audio:
             self.error = ""
         except Exception as exc:
             self.error = f"Audio update: {exc}"
+
+    def latency_info(self, e):
+        if not e.show_latency:
+            return "Off"
+        if "AL_SOFT_source_latency" not in self.source_extensions:
+            return "Unavailable"
+        p = self.playbacks.get(e.id)
+        if not p or p.source is None:
+            return "No active source"
+        try:
+            with self.context.activate():
+                timing = p.source.latency
+            return f"{timing.latency_seconds * 1000:.2f} ms · offset {timing.offset_seconds:.3f} s"
+        except Exception as exc:
+            return f"Unavailable: {exc}"
 
     def _update_emitter(self, e, player, paused):
         p = self.playbacks.setdefault(e.id, Playback())

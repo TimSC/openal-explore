@@ -176,3 +176,42 @@ def test_capability_queries_are_booleans(audio):
     with audio.context.activate():
         assert type(audio.context.supports("AL_SOFT_loop_points")) is bool
         assert audio.context.supports("AL_EXPLORER_nonexistent") is False
+
+
+def test_source_extension_overrides_and_reset(audio, demo):
+    e = demo.emitters[0]
+    e.source_distance_model = "LINEAR_CLAMPED"
+    e.source_resampler = 0
+    e.source_spatialize = "OFF"
+    e.source_radius = 3.0
+    e.show_latency = True
+    audio.update(demo)
+    assert not audio.error
+    p = audio.playbacks[e.id]
+    assert p.source is not None, p.error
+    with audio.context.activate():
+        for extension, parameter, expected in [
+            ("AL_EXT_source_distance_model", "AL_DISTANCE_MODEL", int(audio.al.DistanceModel.LINEAR_CLAMPED)),
+            ("AL_SOFT_source_resampler", "AL_SOURCE_RESAMPLER_SOFT", 0),
+            ("AL_SOFT_source_spatialize", "AL_SOURCE_SPATIALIZE_SOFT", 0),
+        ]:
+            if extension in audio.source_extensions:
+                assert p.source._geti(getattr(audio.al.AL, parameter)) == expected
+        if "AL_EXT_SOURCE_RADIUS" in audio.source_extensions:
+            assert p.source._get(audio.al.AL.AL_SOURCE_RADIUS) == pytest.approx(3)
+    if "AL_SOFT_source_latency" in audio.source_extensions:
+        assert "ms" in audio.latency_info(e)
+    e.source_distance_model = "DEFAULT"
+    e.source_resampler = -1
+    e.source_spatialize = "DEFAULT"
+    e.source_radius = 0
+    e.show_latency = False
+    audio.update(demo)
+    assert not audio.error
+    assert not audio.source_distance_enabled
+    assert audio.latency_info(e) == "Off"
+    with audio.context.activate():
+        if "AL_SOFT_source_spatialize" in audio.source_extensions:
+            assert p.source._geti(audio.al.AL.AL_SOURCE_SPATIALIZE_SOFT) == 2
+        if "AL_EXT_SOURCE_RADIUS" in audio.source_extensions:
+            assert p.source._get(audio.al.AL.AL_SOURCE_RADIUS) == 0
